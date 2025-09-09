@@ -137,56 +137,66 @@ func (r *Request) parse(data []byte) (int, error) {
 	switch r.state {
 	case Done:
 		return 0, fmt.Errorf("trying to read data in a done state")
-	case ParsingHeaders:
-		h := r.Headers
-		n, done, err := h.Parse(data)
-		if done {
-			r.state = ParsingBody
-			return n, nil
-		}
-		if n == 0 && err == nil {
-			return 0, nil
-		}
-		if err != nil {
-			return n, err
-		}
-		return n, nil
-	case ParsingBody:
-		contentLength := r.Headers.Get("content-length")
-		if contentLength == "" {
-			r.state = Done
-			return 0, nil
-		}
-		cl, err := strconv.Atoi(contentLength)
-		if err != nil {
-			return 0, err
-		}
-
-		r.Body = append(r.Body, data...)
-		n := len(data)
-
-		if len(r.Body) > cl {
-			return n, fmt.Errorf("body longer that specified by content-length")
-		}
-		if len(r.Body) == cl {
-			r.state = Done
-			return n, nil
-		}
-
-		return n, nil
 	case Initialized:
-		rl, n, err := parseRequestLine(string(data))
-		if n == 0 && err == nil {
-			return 0, nil
-		}
-		if err != nil {
-			return n, err
-		}
+		return r.parseRequestLine(data)
+	case ParsingHeaders:
+		return r.parseHeaders(data)
+	case ParsingBody:
+		return r.parseBody(data)
+	default:
+		return 0, fmt.Errorf("unreachable state: %v", r.state)
+	}
+}
 
-		r.RequestLine = *rl
-		r.state = ParsingHeaders
-		return n, nil
+func (r *Request) parseRequestLine(data []byte) (int, error) {
+	rl, n, err := parseRequestLine(string(data))
+	if n == 0 && err == nil {
+		return 0, nil
+	}
+	if err != nil {
+		return n, err
 	}
 
-	return 0, fmt.Errorf("UNREACHABLE")
+	r.RequestLine = *rl
+	r.state = ParsingHeaders
+	return n, nil
+}
+
+func (r *Request) parseHeaders(data []byte) (int, error) {
+	n, done, err := r.Headers.Parse(data)
+	if err != nil {
+		return n, err
+	}
+	if done {
+		r.state = ParsingBody
+	}
+	return n, nil
+}
+
+func (r *Request) parseBody(data []byte) (int, error) {
+	contentLength := r.Headers.Get("content-length")
+	if contentLength == "" {
+		r.state = Done
+		return 0, nil
+	}
+
+	cl, err := strconv.Atoi(contentLength)
+	if err != nil {
+		return 0, err
+	}
+
+	remaining := cl - len(r.Body)
+	if remaining <= 0 {
+		r.state = Done
+		return 0, nil
+	}
+
+	toCopy := min(len(data), remaining)
+	r.Body = append(r.Body, data[:toCopy]...)
+
+	if len(r.Body) == cl {
+		r.state = Done
+	}
+
+	return toCopy, nil
 }
